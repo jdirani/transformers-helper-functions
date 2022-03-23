@@ -1,126 +1,55 @@
+import pandas as pd
+import numpy as np
+import os, pickle
 import torch
-from transformers import BertTokenizer, BertModel
 
-# # Load pre-trained model tokenizer (vocabulary)
-# tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-#
-# # Model: hidden_states must be set to True.
-# model = BertModel.from_pretrained('bert-base-uncased', output_hidden_states = True)
-#
-#
-# text = "dog ate bone"
-
-
-def get_words_embeddings(text, tokenizer, model, method='concatenate'):
+def get_sentence_pdist(INPUT_TEXT, model, tokenizer):
     '''
+    Get probabiliy distribution over the whole vocab at each word of the sentence INPUT_TEXT.
 
-    Get contextulized embeddings for each word in the text.
+    This function is only compatible with maked models (e.g. BertForMaskedLM).
 
-    text : str
-           Input text.
+    e.g.
+    tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+    model = BertForMaskedLM.from_pretrained('bert-base-uncased')
 
-    tokenizer : transformers tokenizer
-                e.g. BertTokenizer.from_pretrained('bert-base-uncased')
 
-    model : transformers model, with hidden_states == True
-            e.g. BertModel.from_pretrained('bert-base-uncased', output_hidden_states = True)
+    Parameters
+    -----------
+    INPUT_TEXT : str
+                Must include "<mask>" at the location of the queried word.
+                e.g. 'He went to the <mask> to buy a load of bread.'
 
-    method: str ('concatenate', 'sum', 'last')
-            concatenate: concatenates last 4 hidden layers
-            sum: sums last 4 hidden layers
-            last: get last hidden layer
+    tokenizer : transformers tokenizer object.
 
+    model : transformers model object. Has to be a masked model.
+
+    RETURNS
+    -----------
+    tokens : np.array
+             Tokenized sentence, minus special tokens (e.g. [CLS], [EOS])
+
+    pdist : np.array
+            Probability distribution over tokenzier.vocab, for each token
 
     '''
-
-    # ============= Tokenize the text
-
-    # Add the special tokens.
-    marked_text = "[CLS] " + text + " [SEP]"
-    # Split the sentence into tokens.
-    tokenized_text = tokenizer.tokenize(marked_text)
-    # Map the token strings to their vocabulary indeces.
-    indexed_tokens = tokenizer.convert_tokens_to_ids(tokenized_text)
-    # # Display the words with their indeces.
-    # for tup in zip(tokenized_text, indexed_tokens):
-    #     print('{:<12} {:>6,}'.format(tup[0], tup[1]))
-    # Convert inputs to PyTorch tensors
-    tokens_tensor = torch.tensor([indexed_tokens])
-
-
-    # ================ Get the hidden layers
     model.eval()
 
-    with torch.no_grad(): # minimizes computations, no need for backprop
-        outputs = model(tokens_tensor)
-        hidden_states = outputs[2]
+    # mask_token = tokenizer.mask_token # define the mask token for this specific model
+    # INPUT_TEXT = INPUT_TEXT.replace('<mask>', mask_token) # replace the <mask> with corresponding model token mask
 
-    # ================ Format layers
-    # Get rid of the first dimension (the tuple)
-    token_embeddings = torch.stack(hidden_states, dim=0)
-    # Remove dimension 1, the "batches".
-    token_embeddings = torch.squeeze(token_embeddings, dim=1)
-    # Swap dimensions 0 and 1: in order to be able to loop through tokens/words easily
-    token_embeddings = token_embeddings.permute(1,0,2)
+    input_ids = tokenizer.encode(INPUT_TEXT, return_tensors="pt")
+    # mask_token_index = torch.where(input_ids == tokenizer.mask_token_id)[1]
 
-    # ========== get word vectors
-    vectors = []
+    with torch.no_grad(): # for faster computation
+        token_logits = model(input_ids)[0] # get the logits of all the tokens
 
-    for token in token_embeddings:  # For each token in the sentence
-        if method == 'concatenate':
-            vec = torch.cat((token[-1], token[-2], token[-3], token[-4]), dim=0)
-        elif method == 'sum':
-            vec = torch.sum(token[-4:], dim=0)
-        elif method == 'last':
-            vec = token[-1]
+    pdist = torch.softmax(token_logits, 1).squeeze() # convert logit to pdist: pdist at the mask, one for each of the words in tokenizer.vocab
+    tokens = np.array(tokenizer.convert_ids_to_tokens(input_ids[0]))
 
-        vectors.append(vec)
+    # remove special tokens (e.g. CLS, EOS, etc..)
+    mask_special_ids = [False if i in tokenizer.all_special_ids else True for i in input_ids[0]]
+    pdist = pdist[mask_special_ids]
+    tokens = tokens[mask_special_ids]
 
-    return tokenized_text, vectors
-
-
-
-def get_sentence_embeddings(text, tokenizer, model, method='average'):
-
-    '''
-        method:
-            CLS: classification layer for use scikit-learn in classification tasks (logistic reg)
-            average: average the second to last hiden layer of each token
-    '''
-
-    # ============= Tokenize the text
-    tokens_tensor = torch.tensor(tokenizer.encode(text)).unsqueeze(0)
-
-
-    # ================ Get the hidden layers
-    model.eval()
-
-    with torch.no_grad(): # minimizes computations, no need for backprop
-        outputs = model(tokens_tensor)
-        hidden_states = outputs[2]
-
-    # ================ Format layers
-    # Get rid of the first dimension (the tuple)
-    token_embeddings = torch.stack(hidden_states, dim=0)
-    # Remove dimension 1, the "batches".
-    token_embeddings = torch.squeeze(token_embeddings, dim=1)
-    # Swap dimensions 0 and 1: in order to be able to loop through tokens/words easily
-    token_embeddings = token_embeddings.permute(1,0,2)
-
-    # `token_embeddings` is a [N x 13 x 768] tensor.
-                # nb of tokens, nb of layers, nb of features
-
-    # ========== get sentence vectors
-    vectors = []
-
-    for token in token_embeddings:  # For each token in the sentence
-        if method == 'average':
-            # `token_vecs` is a tensor with shape [22 x 768]
-            token_vecs = hidden_states[-2][0]
-            # Calculate the average of all 22 token vectors.
-            sentence_embedding = torch.mean(token_vecs, dim=0)
-        elif method == 'CLS':
-            last_hidden_states = token_embeddings[:,-1,:]
-            cls_layer = last_hidden_states[0,:]
-
-    return sentence_embedding
+    return tokens, pdist
