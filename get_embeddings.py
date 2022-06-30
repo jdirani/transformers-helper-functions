@@ -11,6 +11,32 @@ from transformers import BertTokenizer, BertModel
 # text = "dog ate bone"
 
 
+def get_CLS_embedding(text, tokenizer, model):
+    '''
+    text : str
+           Input text. Single string (not list of strings) so tjat we can handle
+           sentences of varying length.
+           e.g. 'the dog is barking'
+
+    tokenizer : transformers tokenizer
+                e.g. BertTokenizer.from_pretrained('bert-base-uncased')
+
+    model : transformers model, with hidden_states == True
+            e.g. BertModel.from_pretrained('bert-base-uncased', output_hidden_states = True)
+    '''
+
+    tokenized_text = tokenizer.encode(text, add_special_tokens=True)     # Add the special tokens and tokenize
+    input_ids = torch.tensor([tokenized_text]) # add a dimension and convert to tensor
+
+    model.eval()
+    with torch.no_grad(): # minimizes computations, no need for backprop
+        last_hidden_states = model(input_ids)
+    CLS_features = last_hidden_states[0][0,0,:] # Here taking the first (and only) sentence, first token (the CLS token), all hidden outoputs (768)
+
+    return CLS_features.numpy()
+
+
+
 def get_words_embeddings(text, tokenizer, model, method='concatenate'):
     '''
 
